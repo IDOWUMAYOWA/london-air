@@ -1,0 +1,27 @@
+name: ingest-full
+
+on:
+  schedule:
+    - cron: "30 3 * * *"     # daily at 03:30 UTC, a quiet time
+  workflow_dispatch:
+
+concurrency:
+  group: openaq-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Poll all sensors (daily sweep)
+        run: python ingest.py --full
+        env:
+          OPENAQ_API_KEY: ${{ secrets.OPENAQ_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
