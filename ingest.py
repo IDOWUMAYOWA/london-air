@@ -6,6 +6,7 @@ Usage:
     python ingest.py --discover   # first run: find London stations/sensors
     python ingest.py              # hourly run: poll LIVE sensors only (fast)
     python ingest.py --full       # daily sweep: poll ALL sensors (slow)
+    python ingest.py --discover-only   # refresh stations/sensors, fetch no readings
 
 Design notes:
   * Incremental: per sensor, fetch from the newest stored reading onward.
@@ -83,6 +84,8 @@ def discover(conn):
                 (loc.get("provider") or {}).get("name"),
                 coords["latitude"], coords["longitude"],
                 loc.get("isMonitor"),
+                (loc.get("datetimeFirst") or {}).get("utc"),
+                (loc.get("datetimeLast") or {}).get("utc"),
             ))
             for s in loc_sensors:
                 sensors.append((s["id"], loc["id"], s["parameter"]["name"],
@@ -93,12 +96,16 @@ def discover(conn):
 
     with conn, conn.cursor() as cur:
         execute_values(cur, """
-            INSERT INTO stations (location_id, name, provider, latitude, longitude, is_monitor)
+            INSERT INTO stations (location_id, name, provider, latitude, longitude,
+                                  is_monitor, first_reported, last_reported)
             VALUES %s
             ON CONFLICT (location_id) DO UPDATE SET
               name = EXCLUDED.name, provider = EXCLUDED.provider,
               latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude,
-              is_monitor = EXCLUDED.is_monitor, updated_at = now()
+              is_monitor = EXCLUDED.is_monitor,
+              first_reported = EXCLUDED.first_reported,
+              last_reported = EXCLUDED.last_reported,
+              updated_at = now()
         """, stations)
         execute_values(cur, """
             INSERT INTO sensors (sensor_id, location_id, parameter, units)
@@ -189,6 +196,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--discover", action="store_true",
                         help="refresh the London stations/sensors list first")
+    parser.add_argument("--discover-only", action="store_true",
+                        help="refresh stations/sensors (incl. last_reported), then stop")
     parser.add_argument("--full", action="store_true",
                         help="poll ALL sensors, including stale ones (daily sweep)")
     args = parser.parse_args()
@@ -199,6 +208,9 @@ def main():
 
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
+        if args.discover_only:
+            discover(conn)
+            return
         if args.discover:
             discover(conn)
         # after discovery, new sensors have no readings yet, so force a full poll

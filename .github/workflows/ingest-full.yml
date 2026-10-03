@@ -20,8 +20,8 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Poll all sensors (daily sweep)
-        run: python ingest.py --full
+      - name: Refresh stations, then poll all sensors (daily sweep)
+        run: python ingest.py --discover
         env:
           OPENAQ_API_KEY: ${{ secrets.OPENAQ_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

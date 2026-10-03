@@ -9,6 +9,9 @@ For every sensor, runs four checks against the readings already in Postgres:
   coverage      how many of the last 24 hours have data?
   flatline      is the sensor stuck repeating the same value?
   plausibility  are values physically sensible?
+plus a 'lifecycle' classification (active | quiet | retired). Retired sensors
+(no reports for RETIRED_DAYS, or never) are labelled 'retired' and not judged,
+so the report highlights sensors that SHOULD report and don't.
 
 Each check returns pass | warn | fail | unknown. Results are upserted into
 sensor_health_current, and any status CHANGE is logged to sensor_health_events.
@@ -35,11 +38,29 @@ FLAT_WARN = 6           # identical readings in a row
 FLAT_FAIL = 12
 NEG_FAIL = -10          # below this is impossible; between this and 0 = warn
 UPPER_FAIL = 1000       # ug/m3 ceiling (only applied to ug/m3 units)
+ACTIVE_DAYS = 7          # reported within this many days = active
+RETIRED_DAYS = 60       # silent longer than this (or never) = retired
+CHECKS = ("freshness", "coverage", "flatline", "plausibility")
 
 log = logging.getLogger("health")
 
 
 # --- pure check functions (no database, easy to test) ------------------------
+def classify_lifecycle(last_reported, last_seen, now):
+    """last_reported: OpenAQ's datetimeLast for the station; last_seen: our newest reading."""
+    candidates = [t for t in (last_reported, last_seen) if t is not None]
+    if not candidates:
+        return "retired", None, "never reported"
+    days = (now - max(candidates)).total_seconds() / 86400
+    if days <= ACTIVE_DAYS:
+        status = "active"
+    elif days <= RETIRED_DAYS:
+        status = "quiet"
+    else:
+        status = "retired"
+    return status, round(days, 1), f"last reported {days:.1f} days ago"
+
+
 def check_freshness(last_seen, now):
     if last_seen is None:
         return "fail", None, "sensor has never reported"
@@ -105,14 +126,16 @@ def check_plausibility(min_v, max_v, units):
 
 # --- database work -----------------------------------------------------------
 SUMMARY_SQL = """
-    SELECT s.sensor_id, s.units,
+    SELECT s.sensor_id, s.units, st.last_reported,
            MAX(r.measured_at) AS last_seen,
            COUNT(DISTINCT date_trunc('hour', r.measured_at))
                FILTER (WHERE r.measured_at >= %(now)s - interval '24 hours') AS hours_24,
            MIN(r.value) FILTER (WHERE r.measured_at >= %(now)s - interval '24 hours') AS min_24,
            MAX(r.value) FILTER (WHERE r.measured_at >= %(now)s - interval '24 hours') AS max_24
-    FROM sensors s LEFT JOIN readings r USING (sensor_id)
-    GROUP BY s.sensor_id, s.units
+    FROM sensors s
+    JOIN stations st ON st.location_id = s.location_id
+    LEFT JOIN readings r ON r.sensor_id = s.sensor_id
+    GROUP BY s.sensor_id, s.units, st.last_reported
 """
 
 RECENT_SQL = """
@@ -141,7 +164,13 @@ def run_checks(conn):
         previous = {(sid, name): st for sid, name, st in cur.fetchall()}
 
     results = []   # (sensor_id, check_name, status, observed, detail)
-    for sensor_id, units, last_seen, hours_24, min_24, max_24 in summaries:
+    for sensor_id, units, last_reported, last_seen, hours_24, min_24, max_24 in summaries:
+        lifecycle = classify_lifecycle(last_reported, last_seen, now)
+        results.append((sensor_id, "lifecycle", *lifecycle))
+        if lifecycle[0] == "retired":
+            for name in CHECKS:       # not judged: retired sensors are expected to be silent
+                results.append((sensor_id, name, "retired", None, lifecycle[2]))
+            continue
         results.append((sensor_id, "freshness", *check_freshness(last_seen, now)))
         results.append((sensor_id, "coverage", *check_coverage(hours_24 or 0)))
         results.append((sensor_id, "flatline", *check_flatline(recent.get(sensor_id, []))))
@@ -170,9 +199,9 @@ def run_checks(conn):
             """, events)
 
     tally = Counter((name, status) for _, name, status, _, _ in results)
-    for name in ("freshness", "coverage", "flatline", "plausibility"):
-        parts = ", ".join(f"{st}={tally[(name, st)]}"
-                          for st in ("pass", "warn", "fail", "unknown") if tally[(name, st)])
+    order = ("active", "quiet", "retired", "pass", "warn", "fail", "unknown")
+    for name in ("lifecycle",) + CHECKS:
+        parts = ", ".join(f"{st}={tally[(name, st)]}" for st in order if tally[(name, st)])
         log.info("%-12s %s", name, parts)
     log.info("Checked %d sensors, %d status change(s) logged", len(summaries), len(events))
 
