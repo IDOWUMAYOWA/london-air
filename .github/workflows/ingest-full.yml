@@ -2,7 +2,7 @@ name: ingest-full
 
 on:
   schedule:
-    - cron: "30 3 * * *"     # daily at 03:30 UTC, a quiet time
+    - cron: "47 3 * * *"     # daily at 03:47 UTC, a quiet time
   workflow_dispatch:
 
 concurrency:
@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   ingest:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4

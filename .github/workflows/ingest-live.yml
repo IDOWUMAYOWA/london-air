@@ -2,7 +2,7 @@ name: ingest-live
 
 on:
   schedule:
-    - cron: "5 * * * *"      # every hour at minute 5 (UTC)
+    - cron: "17 * * * *"     # every hour at minute 17 (UTC), off the busy top-of-hour
   workflow_dispatch:          # lets you run it manually from the Actions tab
 
 # The live and full jobs share one API key and rate limit, so never overlap
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   ingest:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -25,4 +25,11 @@ jobs:
         run: python ingest.py
         env:
           OPENAQ_API_KEY: ${{ secrets.OPENAQ_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # always() so health checks still run when ingestion fails: that is
+      # exactly when you most want to know the state of the data
+      - name: Sensor health checks
+        if: always()
+        run: python health_checks.py
+        env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
