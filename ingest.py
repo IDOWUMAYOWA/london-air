@@ -34,6 +34,7 @@ load_dotenv()  # reads OPENAQ_API_KEY and DATABASE_URL from .env
 API = "https://api.openaq.org/v3"
 LONDON_BBOX = "-0.51,51.28,0.33,51.70"   # min_lon,min_lat,max_lon,max_lat
 WANTED = {"pm25", "pm10", "no2"}
+SENSOR_DATE_WINDOW_DAYS = 60              # only look up per-sensor dates for stations alive this recently
 BACKFILL_HOURS = 48                       # how far back on a sensor's first fetch
 LIVE_WINDOW_DAYS = 3                      # reported within this window = "live"
 MIN_GAP_SECONDS = 1.1                     # ~54 requests/min, under the 60/min limit
@@ -116,6 +117,45 @@ def discover(conn):
               parameter = EXCLUDED.parameter, units = EXCLUDED.units
         """, sensors)
     log.info("Discovered %d stations, %d sensors", len(stations), len(sensors))
+    refresh_sensor_dates(conn)
+
+
+def refresh_sensor_dates(conn):
+    """Store each sensor's own latest-reading time (sensors.last_reported).
+
+    A station can look alive only because OTHER sensors there report, so station
+    dates are misleading. /locations/{id}/latest gives one latest value per sensor.
+    Stations silent for over SENSOR_DATE_WINDOW_DAYS are skipped: their sensors
+    cannot have reported more recently.
+    """
+    with conn, conn.cursor() as cur:
+        cur.execute("""SELECT location_id FROM stations
+                       WHERE last_reported >= now() - make_interval(days => %s)""",
+                    (SENSOR_DATE_WINDOW_DAYS,))
+        locations = [r[0] for r in cur.fetchall()]
+
+    updates, failed = [], 0
+    for loc_id in locations:
+        try:
+            results = api_get(f"/locations/{loc_id}/latest", {"limit": 1000}, 3).get("results", [])
+        except Exception as exc:
+            failed += 1
+            log.error("latest for location %s failed: %s", loc_id, exc)
+            continue
+        for r in results:
+            ts = (r.get("datetime") or {}).get("utc")
+            if r.get("sensorsId") and ts:
+                updates.append((r["sensorsId"], ts))
+
+    if updates:
+        with conn, conn.cursor() as cur:
+            execute_values(cur, """
+                UPDATE sensors AS s SET last_reported = v.ts::timestamptz
+                FROM (VALUES %s) AS v(sensor_id, ts)
+                WHERE s.sensor_id = v.sensor_id
+            """, updates)
+    log.info("Sensor dates: %d locations queried (%d failed), %d sensor dates stored",
+             len(locations), failed, len(updates))
 
 
 def fetch_sensor(sensor_id, since):

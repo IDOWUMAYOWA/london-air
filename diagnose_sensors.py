@@ -27,7 +27,8 @@ PICK_SQL = """
          AND l.check_name = 'lifecycle' AND l.status = 'active'
     JOIN sensor_health_current f ON f.sensor_id = s.sensor_id
          AND f.check_name = 'freshness' AND f.status = 'fail' AND f.observed IS NULL
-    ORDER BY random() LIMIT %s
+         AND (%(prov)s::text IS NULL OR st.provider = %(prov)s)
+    ORDER BY random() LIMIT %(n)s
 """
 INFO_SQL = """
     SELECT s.sensor_id, s.location_id, st.name, st.provider, s.parameter
@@ -85,6 +86,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("ids", nargs="*", type=int)
     parser.add_argument("--sample", type=int, default=6)
+    parser.add_argument("--provider", help='e.g. "AirGradient"')
     args = parser.parse_args()
     if not os.environ.get("OPENAQ_API_KEY") or not os.environ.get("DATABASE_URL"):
         sys.exit("Set OPENAQ_API_KEY and DATABASE_URL first.")
@@ -95,7 +97,7 @@ def main():
             if args.ids:
                 cur.execute(INFO_SQL, (args.ids,))
             else:
-                cur.execute(PICK_SQL, (args.sample,))
+                cur.execute(PICK_SQL, {"n": args.sample, "prov": args.provider})
             sensors = cur.fetchall()
             if not sensors:
                 sys.exit("No matching sensors found.")
