@@ -46,9 +46,11 @@ session.headers["X-API-Key"] = os.environ.get("OPENAQ_API_KEY", "")
 
 def api_get(path, params=None, retries=5):
     """GET with rate-limit spacing and 429 backoff. Returns parsed JSON."""
+    last = "no response"
     for attempt in range(1, retries + 1):
         resp = session.get(f"{API}{path}", params=params, timeout=30)
         time.sleep(MIN_GAP_SECONDS)
+        last = f"HTTP {resp.status_code}"
         if resp.status_code == 429:
             wait = int(resp.headers.get("x-ratelimit-reset", 60)) + 1
             log.warning("429 rate limited, sleeping %ss (attempt %s)", wait, attempt)
@@ -59,7 +61,7 @@ def api_get(path, params=None, retries=5):
             continue
         resp.raise_for_status()
         return resp.json()
-    raise RuntimeError(f"Gave up on {path} after {retries} attempts")
+    raise RuntimeError(f"Gave up on {path} after {retries} attempts (last response: {last})")
 
 
 def discover(conn):
